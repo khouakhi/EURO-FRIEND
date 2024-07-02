@@ -104,7 +104,7 @@ leaflet() %>%
 
 ### Microsoft Planetary Computer STAC API
 
-#### Example 1 - NASADEM Elevation data
+#### Example 1: NASADEM Elevation data
 
 We use [Microsoft’s Planetary Computer](https://planetarycomputer.microsoft.com/) to get elevation data over our catchment. There are many elevation products, and here we demonstrate how to get the NASADEM product.
 
@@ -218,8 +218,8 @@ data_collection <- stac_client %>%
   stac_search(collections = collection,
               intersects = selected_basin,
               datetime = datetime) %>%
-  #ext_query("cmip6:model" == 'ACCESS-CM2') %>%
-  #ext_query("cmip6:scenario" == 'ssp585') %>%
+  ext_query("cmip6:model" == 'ACCESS-CM2') %>%
+  ext_query("cmip6:scenario" == 'ssp585') %>%
   post_request() %>%
   items_sign(sign_fn = sign_planetary_computer())
 ```
@@ -241,7 +241,7 @@ List the file and use `rast()` from `terra` to read nc file
 
 ```{r}
 # Define path and list files
-nc_path <- './nex-gddp-cmip6/NEX/GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/'
+nc_path <- paste0(getwd(),'/nex-gddp-cmip6/NEX/GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/')
 tas_files <- list.files(nc_path, full.names = TRUE)
 
 # Load the raster and process it
@@ -254,6 +254,8 @@ tas_basin <- r_day1 %>%
   terra::mask(selected_basin)
 ```
 
+quick plot:
+
 ```{r warning=FALSE}
 # Plot the raster and basin
 tas_time <- as.character(terra::time(tas_basin))
@@ -261,12 +263,16 @@ terra::plot(tas_basin, main = paste0('tas: ', tas_time), col = rainbow(100))
 terra::plot(selected_basin, add = TRUE, border = "black", col = NA)
 ```
 
+You can convert terra raster to a data frame and get the average temperature across the basin for example
+
 ```{r}
 # Convert raster to data frame and calculate mean temperature in Celsius
 tas_df <- terra::as.data.frame(tas_basin)
 mean_tas_celsius <- mean(tas_df$tas_1 - 273.15, na.rm = TRUE)
 print(mean_tas_celsius)
 ```
+
+add to the leaflet map
 
 ```{r}
 # leaflet 
