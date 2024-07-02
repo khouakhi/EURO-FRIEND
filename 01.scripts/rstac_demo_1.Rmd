@@ -1,0 +1,279 @@
+---
+title: "Accessing Data Using STAC API and R"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Introduction
+
+This notebook demonstrates how to use the STAC API with the [`` `rstac` `` R package](https://brazil-data-cube.github.io/rstac/) to retrieve elevation data. The demo assumes some familiarity with R.
+
+STAC (SpatioTemporal Asset Catalogue) aims to standardise the way geospatial assets (like satellite imagery, aerial photos, or any other geospatial data) are described and catalogued, making it easier for users to search, discover, and use this data.
+
+STAC APIs provide access to a set of data that users can query and retrieve. You can find a list of STAC APIs at the [STAC Index](https://stacindex.org/) or [STAC Browser](https://radiantearth.github.io/stac-browser/#/?.language=en). Here, we will use [Microsoft Planetary Computer](https://planetarycomputer.microsoft.com/) STAC, which provides 123 collections of open datasets so far.
+
+All necessary packages are available from CRAN and can be installed using `install.packages(c("rstac", "sf", "tidyverse", "terra", "tidyterra", "leaflet", "osmdata"))` .
+
+### Load libraries
+
+```{r message=TRUE, warning=TRUE, include=FALSE}
+# Load necessary libraries
+library(rstac)
+library(sf)
+library(tidyverse)
+library(terra)
+library(tidyterra)
+library(leaflet)
+library(osmdata)
+```
+
+### Get basin boundary from hydrobasins
+
+Before we start fetching data from the Microsoft Planetary Computer via the STAC API, let's get a catchment boundary to demonstrate how to retrieve data at a catchment level. For this, we use the [HydroBASINS dataset](https://www.hydrosheds.org/products/hydrobasins), which provides polygon layers of sub-basin boundaries at a global scale. The code below downloads the basins for Africa, define a location and extracts the catchment at a chosen location. Here, I am using level 4 data.
+
+```{r}
+# Download and Unzip Shapefile
+# URL of the zip file
+zip_file_url <- "https://data.hydrosheds.org/file/HydroBASINS/standard/hybas_af_lev04_v1c.zip"
+# Destination directory and file path
+data_directory <- "./02.data" 
+dir.create(data_directory) 
+zip_file_path <- paste0(data_directory, '/catch_boundary.zip')
+# Download the zip file
+download.file(zip_file_url, zip_file_path, mode = "wb")
+# Unzip the file
+unzip(zip_file_path, exdir = data_directory)
+# Remove the zip file after unzipping
+file.remove(zip_file_path)
+```
+
+Next, we choose a location and perform a spatial intersection to find the catchment level 4 polygon at that location. You can change the location to any place across Africa. I chose the Sebou River basin, which is the second largest basin in Morocco, covering approximately 40,000 sq km. This basin is important for its agricultural productivity.
+
+```{r}
+# Find the shapefile in the directory
+shapefile_path <- list.files(data_directory, pattern = 'lev04.*\\.shp$', full.names = TRUE)
+# Read the shapefile
+basin_shape_data <- sf::st_read(shapefile_path[1])
+# Create an sf object for the Sebou basin location
+sebou_location <- st_point(c(-5.93, 34.18)) # change here for your basin
+# simple feature column
+sebou_location_sf <- st_sfc(sebou_location, crs = st_crs(basin_shape_data))
+# Validate and correct the geometries
+basin_shape_data <- st_make_valid(basin_shape_data)
+```
+
+get the basin and the bounding box
+
+```{r}
+# Perform spatial intersection to find the polygon containing the location
+intersection <- st_intersects(basin_shape_data, sebou_location_sf, sparse = FALSE)
+selected_basin <- basin_shape_data[which(intersection), ]
+# Get the bounding box of the selected basin
+basin_bbox <- st_bbox(selected_basin)
+```
+
+### River network
+
+We obtain the river network (the main Sebou River) from OSM using the `osmdata` package. Note that OSM river network data are not always accurate, so you may want to choose other data sources if the purpose is not purely for visualisation.
+
+```{r}
+# Get Main River Data from OSM
+# Query OSM data for the Sebou River within the basin bounding box
+sebou_river_net <- opq(bbox = basin_bbox, timeout = 300) %>%
+  add_osm_feature(key = 'waterway', value = 'river') %>%
+  add_osm_feature(key = 'name:en', value = 'Sebou River') %>%
+  osmdata_sf()
+
+```
+
+### Interactive map
+
+Now let's add all the layers to a Leaflet map.
+
+```{r}
+# Create a Leaflet map to visualise the basin and river
+leaflet() %>%
+  addProviderTiles(providers$Esri.WorldImagery) %>%
+  addPolygons(data = selected_basin, color = "blue", weight = 2, fillOpacity = 0.5) %>%
+  addPolylines(data = sebou_river_net$osm_lines, color = "blue", weight = 2)
+
+```
+
+------------------------------------------------------------------------
+
+### Microsoft Planetary Computer STAC API
+
+#### Example 1 - NASADEM Elevation data
+
+We use [Microsoft’s Planetary Computer](https://planetarycomputer.microsoft.com/) to get elevation data over our catchment. There are many elevation products, and here we demonstrate how to get the NASADEM product.
+
+First, we need to let `rstac` know which STAC API we want to query and download from. We do this by passing the URL of the Planetary Computer STAC API to the `rstac::stac()` function.
+
+```{r}
+# STAC API Interaction
+# Define the URL of the STAC API endpoint
+stac_api_url <- "https://planetarycomputer.microsoft.com/api/stac/v1/"
+# Create a STAC client instance
+stac_client <- stac(stac_api_url) 
+# get all MPC collections
+stac_client %>% 
+  rstac::collections() %>% 
+  rstac::get_request()
+```
+
+Let's select the *nasadem* elevation.
+
+```{r}
+# Collection name for NASADEM data
+nasadem_coll <- "nasadem"
+
+```
+
+Now we use `rstac::stac_search()` to pass the collection name and query what items are available in this collection. We will only get items that intersect with our area of interest.
+
+Note the authentication process is built into `rstac`, using the `items_sign()` and `sign_planetary_computer()` functions. It handles the necessary authentication by signing the requests, allowing access to the data.
+
+```{r}
+# Search for the collection that intersects with the selected basin
+nasadem_data <- stac_client %>%
+  stac_search(collections = nasadem_coll,
+              intersects = selected_basin) %>%
+  rstac::post_request() %>%
+  items_sign(sign_fn = sign_planetary_computer())
+nasadem_data
+```
+
+Let's explore some `rstac` functions to further investigate our collection.
+
+```{r}
+# Get the length of the collection
+nasadem_data %>% items_length()
+# Convert items to a tibble for easier handling
+nasadem_items_df <- nasadem_data %>%
+  items_as_tibble()
+# Retrieve properties and assets for further analysis
+nasadem_data %>% items_properties()
+nasadem_data %>% items_assets()
+```
+
+We get the first item and use the `rast()` function from the `terra` package to render and plot it. We then get the URL (`href`) that points to the location of the data.
+
+```{r}
+# Plot Elevation Data
+# Extract the URL of the first item's elevation data
+first_item <- nasadem_data$features[[1]]
+first_item_url <- first_item$assets$elevation$href
+# Plot the first elevation tile
+terra::rast(first_item_url) %>%
+  terra::plot()
+```
+
+Next, we get all tile `href` URLs using `map_chr()` from the `purrr` package, then read all files by mapping the `rast` function. The last step is to mosaic and crop the raster to the basin's shape.
+
+```{r}
+# Extract elevation URLs from all features
+elevation_urls <- map_chr(nasadem_data$features, ~ .x$assets$elevation$href)
+# Read and mosaic the rasters
+mosaic_raster <- map(elevation_urls, terra::rast) %>%
+  terra::sprc() %>% #create spatial collection 
+  terra::mosaic()
+```
+
+Crop the raster
+
+```{r}
+# Crop and mask the mosaic raster with the selected basin
+mosaic_raster <- mosaic_raster %>%
+  terra::crop(selected_basin) %>% 
+  terra::mask(selected_basin)
+# Simple plot of the mosaic raster
+terra::plot(mosaic_raster)
+```
+
+Finally, create a `ggplot` visualisation of the elevation data.
+
+```{r}
+# Create a ggplot visualization of the elevation data
+ggplot() +
+  geom_spatraster(data = mosaic_raster) +
+  scale_fill_whitebox_c(palette = "muted", labels = scales::label_number(), n.breaks = 12, guide = guide_legend(reverse = TRUE)) +
+  geom_sf(data = selected_basin, fill = "transparent", color = "black", linewidth = 0.5) +
+  geom_sf(data = sebou_river_net$osm_lines, color = "blue", linewidth = 0.5) +
+  labs(fill = "Elevation [m]") +
+  theme_bw()
+```
+
+#### Example 2: CMIP6 Climate projections
+
+[Earth Exchange Global Daily Downscaled Projections](https://planetarycomputer.microsoft.com/dataset/nasa-nex-gddp-cmip6) dataset provides global downscaled climate scenarios from CMIP6 GCM runs, supporting the IPCC AR6 report. It includes high-resolution, bias-corrected projections for two Tier 1 SSP emissions scenarios, useful for assessing climate change impacts sensitive to fine-scale climate gradients and local topography.
+
+```{r}
+# Define collection and datetime range
+collection <- "nasa-nex-gddp-cmip6"
+datetime <- "2050-01-01/2060-12-31"
+
+# Search the STAC catalog
+data_collection <- stac_client %>%
+  stac_search(collections = collection,
+              intersects = selected_basin,
+              datetime = datetime) %>%
+  #ext_query("cmip6:model" == 'ACCESS-CM2') %>%
+  #ext_query("cmip6:scenario" == 'ssp585') %>%
+  post_request() %>%
+  items_sign(sign_fn = sign_planetary_computer())
+```
+
+select temperature asset, get first item and download to disk
+
+```{r}
+# Get temperature and first item
+tas_item <- data_collection %>% 
+  assets_select(asset_names = "tas")
+# Get the first item 
+first_item <- tas_item$features[[1]]
+# Download the asset
+first_item %>% 
+  assets_download(overwrite = TRUE)
+```
+
+List the file and use `rast()` from `terra` to read nc file
+
+```{r}
+# Define path and list files
+nc_path <- './nex-gddp-cmip6/NEX/GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/'
+tas_files <- list.files(nc_path, full.names = TRUE)
+
+# Load the raster and process it
+tas_nc <- terra::rast(tas_files)
+r_day1 <- tas_nc[[1]] %>% terra::rotate()
+
+# Crop and mask the raster to the basin
+tas_basin <- r_day1 %>% 
+  terra::crop(selected_basin) %>% 
+  terra::mask(selected_basin)
+```
+
+```{r warning=FALSE}
+# Plot the raster and basin
+tas_time <- as.character(terra::time(tas_basin))
+terra::plot(tas_basin, main = paste0('tas: ', tas_time), col = rainbow(100))
+terra::plot(selected_basin, add = TRUE, border = "black", col = NA)
+```
+
+```{r}
+# Convert raster to data frame and calculate mean temperature in Celsius
+tas_df <- terra::as.data.frame(tas_basin)
+mean_tas_celsius <- mean(tas_df$tas_1 - 273.15, na.rm = TRUE)
+print(mean_tas_celsius)
+```
+
+```{r}
+# leaflet 
+leaflet() %>%
+  addProviderTiles(providers$Esri.WorldImagery) %>%
+  addPolygons(data = selected_basin, weight = 2, fill = FALSE) %>%
+  addPolylines(data = sebou_river_net$osm_lines, weight = 2) %>%
+  addRasterImage(tas_basin, colors = colorNumeric(rainbow(100),values(tas_basin), na.color = "transparent")) %>%
+  addLegend(pal = colorNumeric(rainbow(100),values(tas_basin), na.color = "transparent"),values = values(tas_basin), title = "Temperature (K)")
+```
