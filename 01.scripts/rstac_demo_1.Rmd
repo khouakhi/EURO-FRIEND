@@ -15,6 +15,13 @@ STAC APIs provide access to a set of data that users can query and retrieve. You
 
 All necessary packages are available from CRAN and can be installed using `install.packages(c("rstac", "sf", "tidyverse", "terra", "tidyterra", "leaflet", "osmdata"))` .
 
+```{r}
+# list of packages
+packages <- c("rstac", "sf", "tidyverse", "terra", "tidyterra", "leaflet", "osmdata")
+# Install packages that are not installed
+install.packages(setdiff(packages, rownames(installed.packages())))
+```
+
 ### Load libraries
 
 ```{r message=TRUE, warning=TRUE, include=FALSE}
